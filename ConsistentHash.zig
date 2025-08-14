@@ -60,11 +60,11 @@ pub fn get(self: *const Self, key: Key) ?Key {
     if (self.isEmpty()) return null;
 
     var idx = sort.binarySearch(
+        self.keys.items.len,
         BinarySearchContext{
             .hash = self.hash(key),
             .items = self.keys.items,
         },
-        self.keys.items.len,
         BinarySearchContext.compare,
     );
 
