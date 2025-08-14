@@ -56,7 +56,7 @@ const BinarySearchContext = struct {
 };
 
 // Gets the closest item in the hash to the provided key.
-pub fn get(self: *Self, key: Key) ?Key {
+pub fn get(self: *const Self, key: Key) ?Key {
     if (self.isEmpty()) return null;
 
     var idx = sort.binarySearch(
@@ -85,13 +85,13 @@ pub const KeyIterator = struct {
     }
 };
 
-pub fn keyIterator(self: *Self) KeyIterator {
+pub fn keyIterator(self: *const Self) KeyIterator {
     return .{
         .value_iter = self.hash_map.valueIterator(),
     };
 }
 
-pub fn isEmpty(self: *Self) bool {
+pub fn isEmpty(self: *const Self) bool {
     return self.keys.items.len == 0;
 }
 

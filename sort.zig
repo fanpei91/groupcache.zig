@@ -10,7 +10,7 @@ pub fn binarySearch(
     var i: usize = 0;
     var j: usize = n;
     while (i < j) {
-        const h: usize = (i + j) >> 1;
+        const h: usize = i + (j - i) / 2;
         // i ≤ h < j
         if (!f(ctx, h)) {
             i = h + 1;
