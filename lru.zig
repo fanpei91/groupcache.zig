@@ -73,11 +73,7 @@ pub fn Cache(
                 .key = key,
                 .value = value,
             };
-            if (self.ll.len > 0) {
-                self.ll.prepend(new_node);
-            } else {
-                self.ll.append(new_node);
-            }
+            self.ll.prepend(new_node);
             try self.cache.put(key, new_node);
             if (self.max_entries != 0 and self.ll.len > self.max_entries) {
                 self.removeOldest();
