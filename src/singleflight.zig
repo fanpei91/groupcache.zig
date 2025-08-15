@@ -16,7 +16,7 @@ pub fn Group(comptime ResultType: type) type {
         const Caller = struct {
             cond: Thread.Condition = .{},
             key: Key,
-            value: ?anyerror!ResultType = null,
+            value: ?ResultType = null,
             waits: usize = 0,
             allocator: Allocator,
 
@@ -39,13 +39,13 @@ pub fn Group(comptime ResultType: type) type {
         /// Only one execution is in-flight for a given key at a
         /// time. If a duplicate comes in, the duplicate caller waits for the
         /// original to complete and receives the same results.
-        /// The provided `key` will be duplicated.
+        /// The given `key` will be duplicated.
         pub fn do(
             self: *Self,
             key: Key,
             ctx: anytype,
-            task: *const fn (@TypeOf(ctx)) anyerror!ResultType,
-        ) anyerror!ResultType {
+            task: *const fn (@TypeOf(ctx)) ResultType,
+        ) ResultType {
             self.mutex.lock();
             const calling = self.inflight.get(key);
             if (calling) |caller| {
@@ -92,7 +92,7 @@ pub fn Group(comptime ResultType: type) type {
 }
 
 test "Group.do in single thread" {
-    const I32Group = Group(i32);
+    const I32Group = Group(anyerror!i32);
     const allocator = std.testing.allocator;
     var group = I32Group.init(allocator);
     defer group.deinit();
@@ -116,7 +116,7 @@ test "Group.do in single thread" {
 }
 
 test "Group.do in multiple threads" {
-    const I32Group = Group(i32);
+    const I32Group = Group(anyerror!i32);
     const allocator = std.testing.allocator;
     var group = I32Group.init(allocator);
     defer group.deinit();
