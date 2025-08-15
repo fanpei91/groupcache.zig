@@ -126,27 +126,25 @@ test "Group.do in multiple threads" {
         cnt: i32 = 0,
 
         fn incr(self: *@This()) !i32 {
-            std.time.sleep(100 * std.time.ns_per_ms);
+            std.Thread.sleep(100 * std.time.ns_per_ms);
             self.cnt += 1;
             return self.cnt;
         }
 
-        fn do(self: *@This(), key: Key) void {
+        fn do(self: *@This(), key: Key, wg: *std.Thread.WaitGroup) void {
             const v = self.group.do(key, self, incr) catch unreachable;
             expectEqual(1, v) catch unreachable;
+            wg.finish();
         }
     };
 
-    var pool: Thread.Pool = undefined;
-    try pool.init(.{
-        .allocator = allocator,
-        .n_jobs = 256,
-    });
-    defer pool.deinit();
-
     var wg = Thread.WaitGroup{};
     var task = Task{ .group = &group };
-    pool.spawnWg(&wg, Task.do, .{ &task, "key1" });
+    const threads = 128;
+    wg.startMany(threads);
+    for (0..threads) |_| {
+        _ = try std.Thread.spawn(.{}, Task.do, .{ &task, "key1", &wg });
+    }
     wg.wait();
 
     try expectEqual(1, task.cnt);
