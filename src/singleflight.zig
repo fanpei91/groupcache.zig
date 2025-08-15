@@ -15,7 +15,18 @@ pub fn Group(comptime ResultType: type) type {
 
         const Caller = struct {
             cond: Thread.Condition = .{},
+            key: Key,
             value: ?anyerror!ResultType = null,
+            waits: usize = 0,
+            allocator: Allocator,
+
+            fn destroy(self: *@This()) void {
+                if (self.waits != 0) {
+                    return;
+                }
+                self.allocator.free(self.key);
+                self.allocator.destroy(self);
+            }
         };
 
         pub fn init(allocator: Allocator) Self {
@@ -25,6 +36,10 @@ pub fn Group(comptime ResultType: type) type {
             };
         }
 
+        /// Only one execution is in-flight for a given key at a
+        /// time. If a duplicate comes in, the duplicate caller waits for the
+        /// original to complete and receives the same results.
+        /// The provided `key` will be duplicated.
         pub fn do(
             self: *Self,
             key: Key,
@@ -35,18 +50,27 @@ pub fn Group(comptime ResultType: type) type {
             const calling = self.inflight.get(key);
             if (calling) |caller| {
                 defer self.mutex.unlock();
+                caller.waits += 1;
                 while (caller.value == null) {
                     caller.cond.wait(&self.mutex);
                 }
-                return caller.value.?;
+                caller.waits -= 1;
+                const value = caller.value;
+                caller.destroy();
+                return value.?;
             }
 
             const caller = try self.allocator.create(Caller);
-            defer self.allocator.destroy(caller);
-
-            caller.* = .{};
-            self.inflight.put(key, caller) catch {
+            const dupkey = try self.allocator.dupe(u8, key);
+            caller.* = .{
+                .key = dupkey,
+                .allocator = self.allocator,
+            };
+            self.inflight.put(key, caller) catch |err| {
                 @branchHint(.unlikely);
+                defer self.mutex.unlock();
+                caller.destroy();
+                return err;
             };
             self.mutex.unlock();
 
@@ -54,10 +78,11 @@ pub fn Group(comptime ResultType: type) type {
             caller.cond.broadcast();
 
             self.mutex.lock();
+            defer self.mutex.unlock();
             _ = self.inflight.remove(key);
-            self.mutex.unlock();
-
-            return caller.value.?;
+            const value = caller.value;
+            caller.destroy();
+            return value.?;
         }
 
         pub fn deinit(self: *Self) void {
@@ -96,47 +121,33 @@ test "Group.do in multiple threads" {
     var group = I32Group.init(allocator);
     defer group.deinit();
 
-    var mutex = Thread.Mutex{};
-    var cond = Thread.Condition{};
-
     const Task = struct {
         group: *I32Group,
         cnt: i32 = 0,
-        mutex: *Thread.Mutex,
-        cond: *Thread.Condition,
 
         fn incr(self: *@This()) !i32 {
-            self.mutex.lock();
-            defer self.mutex.unlock();
-            self.cond.wait(self.mutex);
+            std.time.sleep(100 * std.time.ns_per_ms);
             self.cnt += 1;
             return self.cnt;
         }
 
-        fn do(self: *@This(), key: Key, wg: *Thread.WaitGroup) !void {
-            defer wg.finish();
-            _ = try self.group.do(key, self, incr);
+        fn do(self: *@This(), key: Key) void {
+            const v = self.group.do(key, self, incr) catch unreachable;
+            expectEqual(1, v) catch unreachable;
         }
     };
 
-    var task = Task{
-        .group = &group,
-        .mutex = &mutex,
-        .cond = &cond,
-    };
+    var pool: Thread.Pool = undefined;
+    try pool.init(.{
+        .allocator = allocator,
+        .n_jobs = 256,
+    });
+    defer pool.deinit();
 
     var wg = Thread.WaitGroup{};
-    const num = 3;
-    wg.startMany(num);
-    for (0..num) |_| {
-        _ = try Thread.spawn(
-            .{ .allocator = allocator },
-            Task.do,
-            .{ &task, "key1", &wg },
-        );
-    }
-    std.time.sleep(1 * std.time.ns_per_s);
-    cond.broadcast();
+    var task = Task{ .group = &group };
+    pool.spawnWg(&wg, Task.do, .{ &task, "key1" });
     wg.wait();
+
     try expectEqual(1, task.cnt);
 }
