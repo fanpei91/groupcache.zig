@@ -20,7 +20,7 @@ pub fn Group(comptime ResultType: type) type {
             waits: usize = 0,
             allocator: Allocator,
 
-            fn destroy(self: *@This()) void {
+            fn destroy(self: *Caller) void {
                 if (self.waits != 0) {
                     return;
                 }
@@ -66,7 +66,7 @@ pub fn Group(comptime ResultType: type) type {
                 .key = dupkey,
                 .allocator = self.allocator,
             };
-            self.inflight.put(key, caller) catch |err| {
+            self.inflight.put(dupkey, caller) catch |err| {
                 @branchHint(.unlikely);
                 defer self.mutex.unlock();
                 caller.destroy();
@@ -79,7 +79,7 @@ pub fn Group(comptime ResultType: type) type {
 
             self.mutex.lock();
             defer self.mutex.unlock();
-            _ = self.inflight.remove(key);
+            _ = self.inflight.remove(dupkey);
             const value = caller.value;
             caller.destroy();
             return value.?;

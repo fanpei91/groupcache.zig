@@ -50,7 +50,7 @@ const BinarySearchContext = struct {
     hash: u32,
     items: []u32,
 
-    fn compare(ctx: BinarySearchContext, i: usize) bool {
+    fn predict(ctx: BinarySearchContext, i: usize) bool {
         return ctx.items[i] >= ctx.hash;
     }
 };
@@ -65,7 +65,7 @@ pub fn get(self: *const Self, key: Key) ?Key {
             .hash = self.hash(key),
             .items = self.keys.items,
         },
-        BinarySearchContext.compare,
+        BinarySearchContext.predict,
     );
 
     // Means we have cycled back to the first replica.
