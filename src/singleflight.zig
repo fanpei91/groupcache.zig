@@ -57,7 +57,11 @@ pub fn Group(comptime ResultType: type) type {
                 return value.?;
             }
 
-            const caller = try self.allocator.create(Caller);
+            const caller = self.allocator.create(Caller) catch |err| {
+                @branchHint(.unlikely);
+                self.mutex.unlock();
+                return err;
+            };
             caller.* = .{ .allocator = self.allocator };
             self.inflight.put(key, caller) catch |err| {
                 @branchHint(.unlikely);
