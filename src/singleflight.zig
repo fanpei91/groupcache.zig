@@ -15,17 +15,14 @@ pub fn Group(comptime ResultType: type) type {
 
         const Caller = struct {
             cond: Thread.Condition = .{},
-            key: Key,
             value: ?ResultType = null,
             waits: usize = 0,
             allocator: Allocator,
 
             fn destroy(self: *Caller) void {
-                if (self.waits != 0) {
-                    return;
+                if (self.waits == 0) {
+                    self.allocator.destroy(self);
                 }
-                self.allocator.free(self.key);
-                self.allocator.destroy(self);
             }
         };
 
@@ -39,7 +36,7 @@ pub fn Group(comptime ResultType: type) type {
         /// Only one execution is in-flight for a given key at a
         /// time. If a duplicate comes in, the duplicate caller waits for the
         /// original to complete and receives the same results.
-        /// The given `key` will be duplicated.
+        /// The `key` is not stored after `do` called.
         pub fn do(
             self: *Self,
             key: Key,
@@ -61,12 +58,8 @@ pub fn Group(comptime ResultType: type) type {
             }
 
             const caller = try self.allocator.create(Caller);
-            const dupkey = try self.allocator.dupe(u8, key);
-            caller.* = .{
-                .key = dupkey,
-                .allocator = self.allocator,
-            };
-            self.inflight.put(dupkey, caller) catch |err| {
+            caller.* = .{ .allocator = self.allocator };
+            self.inflight.put(key, caller) catch |err| {
                 @branchHint(.unlikely);
                 defer self.mutex.unlock();
                 caller.destroy();
@@ -79,7 +72,7 @@ pub fn Group(comptime ResultType: type) type {
 
             self.mutex.lock();
             defer self.mutex.unlock();
-            _ = self.inflight.remove(dupkey);
+            _ = self.inflight.remove(key);
             const value = caller.value;
             caller.destroy();
             return value.?;
