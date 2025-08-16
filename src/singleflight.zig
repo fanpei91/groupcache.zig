@@ -19,6 +19,14 @@ pub fn Group(comptime ResultType: type) type {
             waits: usize = 0,
             allocator: Allocator,
 
+            fn enter(self: *Caller) void {
+                self.waits += 1;
+            }
+
+            fn leave(self: *Caller) void {
+                self.waits -= 1;
+            }
+
             fn destroy(self: *Caller) void {
                 if (self.waits == 0) {
                     self.allocator.destroy(self);
@@ -47,11 +55,11 @@ pub fn Group(comptime ResultType: type) type {
             const calling = self.inflight.get(key);
             if (calling) |caller| {
                 defer self.mutex.unlock();
-                caller.waits += 1;
+                caller.enter();
                 while (caller.value == null) {
                     caller.cond.wait(&self.mutex);
                 }
-                caller.waits -= 1;
+                caller.leave();
                 const value = caller.value;
                 caller.destroy();
                 return value.?;
