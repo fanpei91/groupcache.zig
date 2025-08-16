@@ -7,6 +7,7 @@ const sort = @import("sort.zig");
 const Self = @This();
 
 const replica_start = 0;
+const key_stack_size_hint = 1024;
 
 pub const Key = []const u8;
 pub const Hash = fn (data: []const u8) u32;
@@ -38,9 +39,11 @@ pub fn add(self: *Self, key: Key) !bool {
     if (try self.hasKey(key)) {
         return true;
     }
+    var stack = std.heap.stackFallback(key_stack_size_hint, self.allocator);
+    var allocator = stack.get();
     for (replica_start..replica_start + self.replicas) |i| {
-        const replica_key = try allocBuildReplicaKey(self.allocator, key, i);
-        defer self.allocator.free(replica_key);
+        const replica_key = try allocBuildReplicaKey(allocator, key, i);
+        defer allocator.free(replica_key);
         const hash = self.hash(replica_key);
         try self.keys.append(hash);
         try self.hash_map.put(hash, key);
@@ -50,12 +53,15 @@ pub fn add(self: *Self, key: Key) !bool {
 }
 
 pub fn hasKey(self: *Self, key: Key) !bool {
+    var stack = std.heap.stackFallback(key_stack_size_hint, self.allocator);
+    var allocator = stack.get();
     const first_replica = try allocBuildReplicaKey(
-        self.allocator,
+        allocator,
         key,
         replica_start,
     );
-    defer self.allocator.free(first_replica);
+
+    defer allocator.free(first_replica);
     const first_replica_hash = self.hash(first_replica);
     if (self.hash_map.contains(first_replica_hash)) {
         return true;
