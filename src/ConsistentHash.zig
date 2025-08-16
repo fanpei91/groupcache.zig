@@ -6,6 +6,8 @@ const sort = @import("sort.zig");
 
 const Self = @This();
 
+const replica_start = 0;
+
 pub const Key = []const u8;
 pub const Hash = fn (data: []const u8) u32;
 const HashMap = std.HashMap(
@@ -31,19 +33,43 @@ pub fn init(allocator: Allocator, replicas: usize, hash: ?*const Hash) Self {
     };
 }
 
-pub fn add(self: *Self, key: Key) !void {
-    for (0..self.replicas) |i| {
-        const data = try std.fmt.allocPrint(
-            self.allocator,
-            "{}{s}",
-            .{ i, key },
-        );
-        defer self.allocator.free(data);
-        const hash = self.hash(data);
+/// Returns true if the key already exists.
+pub fn add(self: *Self, key: Key) !bool {
+    if (try self.hasKey(key)) {
+        return true;
+    }
+    for (replica_start..replica_start + self.replicas) |i| {
+        const replica_key = try allocBuildReplicaKey(self.allocator, key, i);
+        defer self.allocator.free(replica_key);
+        const hash = self.hash(replica_key);
         try self.keys.append(hash);
         try self.hash_map.put(hash, key);
     }
     std.mem.sort(u32, self.keys.items, {}, std.sort.asc(u32));
+    return false;
+}
+
+pub fn hasKey(self: *Self, key: Key) !bool {
+    const first_replica = try allocBuildReplicaKey(
+        self.allocator,
+        key,
+        replica_start,
+    );
+    defer self.allocator.free(first_replica);
+    const first_replica_hash = self.hash(first_replica);
+    if (self.hash_map.contains(first_replica_hash)) {
+        return true;
+    }
+    return false;
+}
+
+fn allocBuildReplicaKey(allocator: Allocator, key: Key, replica: usize) ![]u8 {
+    const data = try std.fmt.allocPrint(
+        allocator,
+        "{}{s}",
+        .{ replica, key },
+    );
+    return data;
 }
 
 const BinarySearchContext = struct {
@@ -109,11 +135,11 @@ test "consistency" {
     var ch2: Self = .init(allocator, 3, null);
     defer ch2.deinit();
 
-    try ch1.add("key1");
-    try ch1.add("key2");
+    _ = try ch1.add("key1");
+    _ = try ch1.add("key2");
 
-    try ch2.add("key1");
-    try ch2.add("key2");
+    _ = try ch2.add("key1");
+    _ = try ch2.add("key2");
 
     try expectEqual(ch1.get("key11"), ch2.get("key11"));
     try expectEqual(ch1.get("key22"), ch2.get("key22"));
@@ -128,9 +154,12 @@ test "hashing" {
     }.hash);
     defer ch1.deinit();
 
-    try ch1.add("2");
-    try ch1.add("4");
-    try ch1.add("6");
+    _ = try ch1.add("2");
+    _ = try ch1.add("4");
+    _ = try ch1.add("6");
+
+    const exists = try ch1.add("6");
+    try expectEqual(true, exists);
 
     try expectEqual(ch1.get("2"), "2");
     try expectEqual(ch1.get("11"), "2");
@@ -156,9 +185,9 @@ test keyIterator {
     try keys.put("k2", true);
     try keys.put("k3", true);
 
-    try ch.add("k1");
-    try ch.add("k2");
-    try ch.add("k3");
+    _ = try ch.add("k1");
+    _ = try ch.add("k2");
+    _ = try ch.add("k3");
 
     var it = ch.keyIterator();
     while (it.next()) |k| {
