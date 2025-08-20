@@ -3,7 +3,10 @@ const Thread = std.Thread;
 const Allocator = std.mem.Allocator;
 const expectEqual = std.testing.expectEqual;
 
-pub const Key = []const u8;
+const mem = @import("mem.zig");
+
+const String = mem.String;
+pub const Key = mem.Rc(String);
 
 pub fn Group(comptime ResultType: type) type {
     return struct {
@@ -49,10 +52,11 @@ pub fn Group(comptime ResultType: type) type {
             self: *Self,
             key: Key,
             ctx: anytype,
-            task: *const fn (@TypeOf(ctx)) ResultType,
+            task: *const fn (@TypeOf(ctx), Key) ResultType,
         ) ResultType {
+            const rawkey = key.val().slice();
             self.mutex.lock();
-            const calling = self.inflight.get(key);
+            const calling = self.inflight.get(rawkey);
             if (calling) |caller| {
                 defer self.mutex.unlock();
                 caller.enter();
@@ -71,7 +75,7 @@ pub fn Group(comptime ResultType: type) type {
                 return err;
             };
             caller.* = .{ .allocator = self.allocator };
-            self.inflight.put(key, caller) catch |err| {
+            self.inflight.put(rawkey, caller) catch |err| {
                 @branchHint(.unlikely);
                 defer self.mutex.unlock();
                 caller.destroy();
@@ -79,12 +83,12 @@ pub fn Group(comptime ResultType: type) type {
             };
             self.mutex.unlock();
 
-            caller.value = task(ctx);
+            caller.value = task(ctx, key);
             caller.cond.broadcast();
 
             self.mutex.lock();
             defer self.mutex.unlock();
-            _ = self.inflight.remove(key);
+            _ = self.inflight.remove(rawkey);
             const value = caller.value;
             caller.destroy();
             return value.?;
@@ -92,6 +96,7 @@ pub fn Group(comptime ResultType: type) type {
 
         pub fn deinit(self: *Self) void {
             self.inflight.deinit();
+            self.* = undefined;
         }
     };
 }
@@ -102,15 +107,21 @@ test "Group.do in single thread" {
     var group = I32Group.init(allocator);
     defer group.deinit();
 
-    const value = try group.do("k1", {}, struct {
-        fn do(_: void) !i32 {
+    const k1 = try Key.init(allocator, String.static("k1"));
+    defer k1.deinit();
+
+    const value = try group.do(k1, {}, struct {
+        fn do(_: void, _: Key) !i32 {
             return 1;
         }
     }.do);
     try expectEqual(1, value);
 
-    _ = group.do("k2", {}, struct {
-        fn do(_: void) !i32 {
+    const k2 = try Key.init(allocator, String.static("k2"));
+    defer k2.deinit();
+
+    _ = group.do(k2, {}, struct {
+        fn do(_: void, _: Key) !i32 {
             return error.Error;
         }
     }.do) catch |err| {
@@ -130,7 +141,7 @@ test "Group.do in multiple threads" {
         group: *I32Group,
         cnt: i32 = 0,
 
-        fn incr(self: *@This()) !i32 {
+        fn incr(self: *@This(), _: Key) !i32 {
             std.Thread.sleep(100 * std.time.ns_per_ms);
             self.cnt += 1;
             return self.cnt;
@@ -143,12 +154,15 @@ test "Group.do in multiple threads" {
         }
     };
 
+    var key1 = try Key.init(allocator, String.static("key1"));
+    defer key1.deinit();
+
     var wg = Thread.WaitGroup{};
     var task = Task{ .group = &group };
     const threads = 128;
     wg.startMany(threads);
     for (0..threads) |_| {
-        _ = try std.Thread.spawn(.{}, Task.do, .{ &task, "key1", &wg });
+        _ = try std.Thread.spawn(.{}, Task.do, .{ &task, key1, &wg });
     }
     wg.wait();
 

@@ -1,0 +1,17 @@
+.{
+    .name = .groupcache,
+    .version = "0.0.0",
+    .fingerprint = 0x3538408cf455c0e5,
+    .minimum_zig_version = "0.14.1",
+    .dependencies = .{
+        .protobuf = .{
+            .url = "git+https://github.com/Arwalk/zig-protobuf#47d67dce9f35623f3142c82db0076fc63b25a455",
+            .hash = "protobuf-2.0.0-0e82an1WIwANRorFJqVOPbAuiYmV-tZOl8w2JduAxLZD",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
