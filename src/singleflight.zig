@@ -3,10 +3,10 @@ const Thread = std.Thread;
 const Allocator = std.mem.Allocator;
 const expectEqual = std.testing.expectEqual;
 
-const mem = @import("mem.zig");
+const Rc = @import("rc.zig").Rc;
+const Slice = @import("slice.zig").Slice;
 
-const String = mem.String;
-pub const Key = mem.Rc(String);
+pub const Key = Slice(u8);
 
 pub fn Group(comptime ResultType: type) type {
     return struct {
@@ -54,7 +54,7 @@ pub fn Group(comptime ResultType: type) type {
             ctx: anytype,
             task: *const fn (@TypeOf(ctx), Key) ResultType,
         ) ResultType {
-            const rawkey = key.val().slice();
+            const rawkey = key.slice();
             self.mutex.lock();
             const calling = self.inflight.get(rawkey);
             if (calling) |caller| {
@@ -107,7 +107,7 @@ test "Group.do in single thread" {
     var group = I32Group.init(allocator);
     defer group.deinit();
 
-    const k1 = try Key.init(allocator, String.static("k1"));
+    const k1 = Key.static("k1");
     defer k1.deinit();
 
     const value = try group.do(k1, {}, struct {
@@ -117,7 +117,7 @@ test "Group.do in single thread" {
     }.do);
     try expectEqual(1, value);
 
-    const k2 = try Key.init(allocator, String.static("k2"));
+    const k2 = Key.static("k2");
     defer k2.deinit();
 
     _ = group.do(k2, {}, struct {
@@ -154,7 +154,7 @@ test "Group.do in multiple threads" {
         }
     };
 
-    var key1 = try Key.init(allocator, String.static("key1"));
+    var key1 = Key.static("key1");
     defer key1.deinit();
 
     var wg = Thread.WaitGroup{};
