@@ -2,11 +2,11 @@
     .name = .groupcache,
     .version = "0.0.0",
     .fingerprint = 0x3538408cf455c0e5,
-    .minimum_zig_version = "0.14.1",
+    .minimum_zig_version = "0.15.0",
     .dependencies = .{
         .protobuf = .{
-            .url = "git+https://github.com/Arwalk/zig-protobuf#47d67dce9f35623f3142c82db0076fc63b25a455",
-            .hash = "protobuf-2.0.0-0e82an1WIwANRorFJqVOPbAuiYmV-tZOl8w2JduAxLZD",
+            .url = "git+https://github.com/mochalins/zig-protobuf?ref=0.15.1_port#55e5759dd60d5d6c4ddc756daa429d66fa464e39",
+            .hash = "protobuf-2.0.0-0e82av_tJAB8lLGgPXMI3bE1SOg3vP5GDCSlcjDurOyM",
         },
     },
     .paths = .{

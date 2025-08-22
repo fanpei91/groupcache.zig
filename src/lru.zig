@@ -2,6 +2,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const expectEqual = std.testing.expectEqual;
 const AutoContext = std.hash_map.AutoContext;
+const DoublyLinkedList = std.DoublyLinkedList;
+const Node = DoublyLinkedList.Node;
 
 /// Context must be a struct type with two member functions:
 ///   hash(self, K) u64
@@ -17,12 +19,18 @@ pub fn Cache(
             key: K,
             value: V,
         };
+        const LinkedListEntry = struct {
+            data: Entry,
+            node: Node,
+
+            fn ptrByNode(node: *Node) *@This() {
+                return @fieldParentPtr("node", node);
+            }
+        };
         pub const EntryEvictor = struct {
             ptr: *anyopaque,
             evict: *const fn (ptr: *anyopaque, entry: Entry) void,
         };
-        const DoublyLinkedList = std.DoublyLinkedList(Entry);
-        const Node = DoublyLinkedList.Node;
 
         pub const EntryIterator = struct {
             current: ?*Node,
@@ -30,12 +38,13 @@ pub fn Cache(
             pub fn next(self: *EntryIterator) ?Entry {
                 const current = self.current orelse return null;
                 self.current = current.next;
-                return current.data;
+                const entry = LinkedListEntry.ptrByNode(current);
+                return entry.data;
             }
         };
 
         allocator: Allocator,
-        cache: std.HashMap(K, *Node, Context, 80),
+        cache: std.HashMap(K, *LinkedListEntry, Context, 80),
         ll: DoublyLinkedList = .{},
         max_entries: usize,
         entry_evictor: ?EntryEvictor,
@@ -61,21 +70,24 @@ pub fn Cache(
 
         /// Returns the old value if key already exists.
         pub fn add(self: *Self, key: K, value: V) !?V {
-            const existing_node = self.cache.get(key);
-            if (existing_node) |node| {
-                self.markAsRecentlyUsed(node);
-                const old_value = node.data.value;
-                node.data.value = value;
+            const existing_entry = self.cache.get(key);
+            if (existing_entry) |entry| {
+                self.markAsRecentlyUsed(&entry.node);
+                const old_value = entry.data.value;
+                entry.data.value = value;
                 return old_value;
             }
-            const new_node = try self.allocator.create(Node);
-            new_node.data = .{
-                .key = key,
-                .value = value,
+            const new_entry = try self.allocator.create(LinkedListEntry);
+            new_entry.* = .{
+                .data = .{
+                    .key = key,
+                    .value = value,
+                },
+                .node = .{},
             };
-            self.ll.prepend(new_node);
-            try self.cache.put(key, new_node);
-            if (self.max_entries != 0 and self.ll.len > self.max_entries) {
+            self.ll.prepend(&new_entry.node);
+            try self.cache.put(key, new_entry);
+            if (self.max_entries != 0 and self.len() > self.max_entries) {
                 self.removeOldest();
             }
             return null;
@@ -87,14 +99,14 @@ pub fn Cache(
         }
 
         pub fn get(self: *Self, key: K) ?V {
-            const node = self.cache.get(key) orelse return null;
-            self.markAsRecentlyUsed(node);
-            return node.data.value;
+            const entry = self.cache.get(key) orelse return null;
+            self.markAsRecentlyUsed(&entry.node);
+            return entry.data.value;
         }
 
         pub fn remove(self: *Self, key: K) void {
-            const node = self.cache.get(key) orelse return;
-            self.removeNode(node);
+            const entry = self.cache.get(key) orelse return;
+            self.removeNode(&entry.node);
         }
 
         pub fn removeOldest(self: *Self) void {
@@ -103,24 +115,24 @@ pub fn Cache(
         }
 
         fn removeNode(self: *Self, node: *Node) void {
-            const entry = node.data;
-            _ = self.cache.remove(entry.key);
+            const entry = LinkedListEntry.ptrByNode(node);
+            _ = self.cache.remove(entry.data.key);
             self.ll.remove(node);
             if (self.entry_evictor) |evictor| {
-                evictor.evict(evictor.ptr, entry);
+                evictor.evict(evictor.ptr, entry.data);
             }
-            self.allocator.destroy(node);
+            self.allocator.destroy(entry);
         }
 
         pub fn len(self: *Self) usize {
-            return self.ll.len;
+            return self.cache.count();
         }
 
         pub fn deinit(self: *Self) void {
             var node = self.ll.first;
             while (node) |n| {
                 node = n.next;
-                self.allocator.destroy(n);
+                self.allocator.destroy(LinkedListEntry.ptrByNode(n));
             }
             self.cache.deinit();
             self.* = undefined;

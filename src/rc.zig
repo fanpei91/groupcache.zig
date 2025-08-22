@@ -1,6 +1,9 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+/// A reference-counted smart pointer type.
+/// Keeps track of how many `Rc` instances point to the same value,
+/// automatically calling deinit(T) when the count drops to zero.
 pub fn Rc(comptime T: type) type {
     return struct {
         const Self = @This();

@@ -28,7 +28,7 @@ pub fn init(allocator: Allocator, replicas: usize, hash: ?*const Hash) Self {
     return .{
         .replicas = replicas,
         .hash = hash orelse Crc32.hash,
-        .keys = .init(allocator),
+        .keys = .empty,
         .hash_map = .init(allocator),
         .allocator = allocator,
     };
@@ -45,7 +45,7 @@ pub fn add(self: *Self, key: Key) !bool {
         const replica_key = try allocBuildReplicaKey(allocator, key, i);
         defer allocator.free(replica_key);
         const hash = self.hash(replica_key);
-        try self.keys.append(hash);
+        try self.keys.append(self.allocator, hash);
         try self.hash_map.put(hash, key);
     }
     std.mem.sort(u32, self.keys.items, {}, std.sort.asc(u32));
@@ -128,7 +128,7 @@ pub fn isEmpty(self: *const Self) bool {
 }
 
 pub fn deinit(self: *Self) void {
-    self.keys.deinit();
+    self.keys.deinit(self.allocator);
     self.hash_map.deinit();
     self.* = undefined;
 }

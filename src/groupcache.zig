@@ -2,8 +2,6 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const protocol = @import("protocol/groupcachepb.pb.zig");
 
-const ManagedString = @import("protobuf").ManagedString;
-
 const FlightGroup = @import("singleflight.zig").Group(anyerror!Value);
 const LRUCache = @import("lru.zig").Cache(
     Key,
@@ -31,7 +29,7 @@ pub const Value = Rc(Bytes);
 
 pub const ProtoGetter = struct {
     pub const Vtable = struct {
-        get: *const fn (*anyopaque, GetRequest) anyerror!GetResponse,
+        get: *const fn (*anyopaque, Allocator, GetRequest) anyerror!GetResponse,
         name: *const fn (*anyopaque) Bytes,
     };
     ptr: *anyopaque,
@@ -41,9 +39,10 @@ pub const ProtoGetter = struct {
 
     fn get(
         self: *Self,
+        allocator: Allocator,
         req: GetRequest,
     ) !GetResponse {
-        return try self.vtable.get(self.ptr, req);
+        return try self.vtable.get(self.ptr, allocator, req);
     }
 
     fn name(self: *Self) Bytes {
@@ -206,17 +205,14 @@ pub const GroupCache = struct {
     }
 
     fn getFromPeer(self: *Self, peer: *ProtoGetter, key: Key) !Value {
-        var req: GetRequest = .{
-            .group = ManagedString.managed(self.name.slice()),
-            .key = ManagedString.managed(key.slice()),
+        const req: GetRequest = .{
+            .group = self.name.slice(),
+            .key = key.slice(),
         };
-        defer req.deinit();
-
-        var res = try peer.get(req);
-        defer res.deinit();
+        const res = try peer.get(self.allocator, req);
 
         const value = res.value orelse return error.MissingPeerResponseValue;
-        const val_slice = try Bytes.copy(value.getSlice(), self.allocator);
+        const val_slice = Bytes.move(@constCast(value), self.allocator);
         const val_rc = Value.init(self.allocator, val_slice) catch |err| {
             val_slice.deinit();
             return err;
@@ -409,7 +405,6 @@ test GroupCache {
     const MockProtoGetter = struct {
         const Self = @This();
 
-        allocator: Allocator,
         identifier: Bytes,
         ngets: usize = 0,
 
@@ -423,20 +418,20 @@ test GroupCache {
             };
         }
 
-        fn get(ptr: *anyopaque, req: GetRequest) !GetResponse {
+        fn get(ptr: *anyopaque, allocator: Allocator, req: GetRequest) !GetResponse {
             const self: *Self = @ptrCast(@alignCast(ptr));
             self.ngets += 1;
             const res_value = try std.fmt.allocPrint(
-                self.allocator,
+                allocator,
                 "{s}->[group: {s}, key: {s}]",
                 .{
                     self.identifier.slice(),
-                    req.group.getSlice(),
-                    req.key.getSlice(),
+                    req.group,
+                    req.key,
                 },
             );
             return .{
-                .value = ManagedString.move(res_value, self.allocator),
+                .value = res_value,
                 .minute_qps = 0,
             };
         }
@@ -484,7 +479,7 @@ test GroupCache {
         }
 
         fn get(ptr: *anyopaque, key: Key) !Value {
-            const self: *Self = @alignCast(@ptrCast(ptr));
+            const self: *Self = @ptrCast(@alignCast(ptr));
             self.ngets += 1;
             const rawvalue = try std.fmt.allocPrint(
                 self.allocator,
@@ -503,7 +498,6 @@ test GroupCache {
     const peer_identifier = Bytes.static("peer://127.0.0.1:8080");
 
     var mock_proto_getter = MockProtoGetter{
-        .allocator = allocator,
         .identifier = peer_identifier,
     };
     var mock_peer_picker = MockPeerPicker{
