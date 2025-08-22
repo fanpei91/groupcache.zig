@@ -19,11 +19,11 @@ pub fn Cache(
             key: K,
             value: V,
         };
-        const LinkedListEntry = struct {
+        const EntryNode = struct {
             data: Entry,
             node: Node,
 
-            fn ptrByNode(node: *Node) *@This() {
+            fn fromNode(node: *Node) *@This() {
                 return @fieldParentPtr("node", node);
             }
         };
@@ -38,13 +38,13 @@ pub fn Cache(
             pub fn next(self: *EntryIterator) ?Entry {
                 const current = self.current orelse return null;
                 self.current = current.next;
-                const entry = LinkedListEntry.ptrByNode(current);
+                const entry = EntryNode.fromNode(current);
                 return entry.data;
             }
         };
 
         allocator: Allocator,
-        cache: std.HashMap(K, *LinkedListEntry, Context, 80),
+        cache: std.HashMap(K, *EntryNode, Context, 80),
         ll: DoublyLinkedList = .{},
         max_entries: usize,
         entry_evictor: ?EntryEvictor,
@@ -77,7 +77,7 @@ pub fn Cache(
                 entry.data.value = value;
                 return old_value;
             }
-            const new_entry = try self.allocator.create(LinkedListEntry);
+            const new_entry = try self.allocator.create(EntryNode);
             new_entry.* = .{
                 .data = .{
                     .key = key,
@@ -115,7 +115,7 @@ pub fn Cache(
         }
 
         fn removeNode(self: *Self, node: *Node) void {
-            const entry = LinkedListEntry.ptrByNode(node);
+            const entry = EntryNode.fromNode(node);
             _ = self.cache.remove(entry.data.key);
             self.ll.remove(node);
             if (self.entry_evictor) |evictor| {
@@ -132,7 +132,7 @@ pub fn Cache(
             var node = self.ll.first;
             while (node) |n| {
                 node = n.next;
-                self.allocator.destroy(LinkedListEntry.ptrByNode(n));
+                self.allocator.destroy(EntryNode.fromNode(n));
             }
             self.cache.deinit();
             self.* = undefined;
