@@ -1,8 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-/// A reference-counted smart pointer that provides shared ownership of a value.
-/// The resource is automatically freed when the last `Rc` is deinitialized.
+/// A managed slice type that can hold either owned or constant slices.
 /// The Idea is from https://github.com/Arwalk/zig-protobuf.
 pub fn Slice(comptime T: type) type {
     return union(enum) {
