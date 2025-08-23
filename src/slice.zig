@@ -1,49 +1,46 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-/// A managed slice type that can hold either owned or constant slices.
-/// The Idea is from https://github.com/Arwalk/zig-protobuf.
+pub const Bytes = Slice(u8);
+
+/// A reference-counted slice type that can hold either owned or borrowed data.
+/// Provides memory-safe sharing through reference counting for owned slices,
+/// while allowing zero-cost usage of compile-time constants and borrowed data.
 pub fn Slice(comptime T: type) type {
     return union(enum) {
-        pub const Allocated = struct {
+        const Rc = struct {
             allocator: Allocator,
             slice: []T,
+            refs: usize,
         };
 
         const Self = @This();
 
-        Owned: Allocated,
+        Owned: *Rc,
         Const: []const T,
 
         /// Take ownership of the heap-allocated slice `s`
         /// (allocated with `allocator`).
-        pub fn move(s: []T, allocator: Allocator) Self {
-            return .{
-                .Owned = Allocated{
-                    .slice = s,
-                    .allocator = allocator,
-                },
+        pub fn move(s: []T, allocator: Allocator) Allocator.Error!Self {
+            const rc = try allocator.create(Rc);
+            rc.* = .{
+                .slice = s,
+                .allocator = allocator,
+                .refs = 1,
             };
+            return .{ .Owned = rc };
         }
 
         /// Copy the provided slice using the allocator.
         /// The `s` parameter should be freed by the caller.
         pub fn copy(s: []const T, allocator: Allocator) Allocator.Error!Self {
-            return .{
-                .Owned = Allocated{
-                    .slice = try allocator.dupe(T, s),
-                    .allocator = allocator,
-                },
+            const rc = try allocator.create(Rc);
+            rc.* = .{
+                .slice = try allocator.dupe(T, s),
+                .allocator = allocator,
+                .refs = 1,
             };
-        }
-
-        /// Create a deep copy of the managed slice
-        /// using the provided allocator.
-        pub fn dupe(self: Self, allocator: Allocator) Allocator.Error!Self {
-            switch (self) {
-                .Owned => |alloc| return copy(alloc.slice, allocator),
-                .Const => return self,
-            }
+            return .{ .Owned = rc };
         }
 
         /// Create a static slice from a compile time const.
@@ -57,24 +54,40 @@ pub fn Slice(comptime T: type) type {
             return .{ .Const = s };
         }
 
-        /// Return the underlying slice.
-        pub fn slice(self: Self) []T {
+        /// Create a new reference to the same slice data and increment
+        /// the reference count.
+        pub fn clone(self: Self) Self {
             switch (self) {
-                .Owned => |alloc| return alloc.slice,
+                .Owned => |rc| {
+                    rc.refs += 1;
+                    return .{ .Owned = rc };
+                },
+                .Const => return self,
+            }
+        }
+
+        /// Return the underlying slice.
+        pub fn val(self: Self) []T {
+            switch (self) {
+                .Owned => |rc| return rc.slice,
                 .Const => |c| return @constCast(c),
             }
         }
 
         /// Return the underlying slice's len.
         pub fn len(self: Self) usize {
-            return self.slice().len;
+            return self.val().len;
         }
 
         /// Free any allocated memory associated with the managed slice.
         pub fn deinit(self: Self) void {
             switch (self) {
-                .Owned => |alloc| {
-                    alloc.allocator.free(alloc.slice);
+                .Owned => |rc| {
+                    rc.refs -= 1;
+                    if (rc.refs == 0) {
+                        rc.allocator.free(rc.slice);
+                        rc.allocator.destroy(rc);
+                    }
                 },
                 .Const => {},
             }
@@ -86,12 +99,12 @@ test "runtime string" {
     const allocator = std.testing.allocator;
 
     const message = try std.fmt.allocPrint(allocator, "hello world", .{});
-    const greeting = Bytes.move(message, allocator);
+    const greeting = try Bytes.move(message, allocator);
     defer greeting.deinit();
 
     try std.testing.expectEqualStrings(
         "hello world",
-        greeting.slice(),
+        greeting.val(),
     );
 }
 
@@ -99,16 +112,13 @@ test "copy runtime string" {
     const allocator = std.testing.allocator;
 
     const message = try std.fmt.allocPrint(allocator, "hello world", .{});
-    const greeting = Bytes.copy(message, allocator) catch {
-        allocator.free(message);
-        return;
-    };
+    const greeting = try Bytes.copy(message, allocator);
     allocator.free(message);
     defer greeting.deinit();
 
     try std.testing.expectEqualStrings(
         "hello world",
-        greeting.slice(),
+        greeting.val(),
     );
 }
 
@@ -118,7 +128,7 @@ test "static string" {
 
     try std.testing.expectEqualStrings(
         "hello world",
-        greeting.slice(),
+        greeting.val(),
     );
 }
 
@@ -133,8 +143,47 @@ test "managed string" {
 
     try std.testing.expectEqualStrings(
         "hello world",
-        greeting.slice(),
+        greeting.val(),
     );
 }
 
-const Bytes = Slice(u8);
+test "clone runtime slice" {
+    const allocator = std.testing.allocator;
+    const message = try std.fmt.allocPrint(allocator, "hello world", .{});
+
+    const greeting = try Bytes.move(message, allocator);
+    const clone = greeting.clone();
+    defer clone.deinit();
+
+    greeting.deinit();
+    try std.testing.expectEqualStrings(
+        "hello world",
+        clone.val(),
+    );
+}
+
+test "clone static slice" {
+    const greeting = Bytes.static("hello world");
+    const clone = greeting.clone();
+    defer clone.deinit();
+
+    greeting.deinit();
+    try std.testing.expectEqualStrings(
+        "hello world",
+        clone.val(),
+    );
+}
+
+test "slice of string" {
+    const strings: Slice(Bytes) = .static(&.{
+        Bytes.static("hello"),
+        Bytes.static("world"),
+    });
+
+    for (strings.val(), 0..) |string, i| {
+        try std.testing.expectEqualStrings(
+            strings.val()[i].val(),
+            string.val(),
+        );
+    }
+}

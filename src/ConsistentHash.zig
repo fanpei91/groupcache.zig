@@ -7,9 +7,8 @@ const sort = @import("sort.zig");
 const Self = @This();
 
 const replica_start = 0;
-const key_stack_size_hint = 1024;
 
-pub const Key = []const u8;
+pub const Key = @import("slice.zig").Bytes;
 pub const Hash = fn (data: []const u8) u32;
 const HashMap = std.HashMap(
     u32,
@@ -39,43 +38,39 @@ pub fn add(self: *Self, key: Key) !bool {
     if (try self.hasKey(key)) {
         return true;
     }
-    var stack = std.heap.stackFallback(key_stack_size_hint, self.allocator);
-    var allocator = stack.get();
     for (replica_start..replica_start + self.replicas) |i| {
-        const replica_key = try allocBuildReplicaKey(allocator, key, i);
-        defer allocator.free(replica_key);
-        const hash = self.hash(replica_key);
+        const replica_key = try allocBuildReplicaKey(self.allocator, key, i);
+        defer replica_key.deinit();
+        const hash = self.hash(replica_key.val());
         try self.keys.append(self.allocator, hash);
-        try self.hash_map.put(hash, key);
+        try self.hash_map.put(hash, key.clone());
     }
     std.mem.sort(u32, self.keys.items, {}, std.sort.asc(u32));
     return false;
 }
 
 pub fn hasKey(self: *Self, key: Key) !bool {
-    var stack = std.heap.stackFallback(key_stack_size_hint, self.allocator);
-    var allocator = stack.get();
     const first_replica = try allocBuildReplicaKey(
-        allocator,
+        self.allocator,
         key,
         replica_start,
     );
+    defer first_replica.deinit();
 
-    defer allocator.free(first_replica);
-    const first_replica_hash = self.hash(first_replica);
+    const first_replica_hash = self.hash(first_replica.val());
     if (self.hash_map.contains(first_replica_hash)) {
         return true;
     }
     return false;
 }
 
-fn allocBuildReplicaKey(allocator: Allocator, key: Key, replica: usize) ![]u8 {
+fn allocBuildReplicaKey(allocator: Allocator, key: Key, replica: usize) !Key {
     const data = try std.fmt.allocPrint(
         allocator,
         "{}{s}",
-        .{ replica, key },
+        .{ replica, key.val() },
     );
-    return data;
+    return Key.move(data, allocator);
 }
 
 const BinarySearchContext = struct {
@@ -94,7 +89,7 @@ pub fn get(self: *const Self, key: Key) ?Key {
     var idx = sort.binarySearch(
         self.keys.items.len,
         BinarySearchContext{
-            .hash = self.hash(key),
+            .hash = self.hash(key.val()),
             .items = self.keys.items,
         },
         BinarySearchContext.predict,
@@ -105,22 +100,8 @@ pub fn get(self: *const Self, key: Key) ?Key {
         idx = 0;
     }
 
-    return self.hash_map.get(self.keys.items[idx]);
-}
-
-pub const KeyIterator = struct {
-    value_iter: HashMap.ValueIterator,
-
-    pub fn next(self: *KeyIterator) ?Key {
-        const value = self.value_iter.next() orelse return null;
-        return value.*;
-    }
-};
-
-pub fn keyIterator(self: *const Self) KeyIterator {
-    return .{
-        .value_iter = self.hash_map.valueIterator(),
-    };
+    const found = self.hash_map.get(self.keys.items[idx]);
+    return if (found) |f| f.clone() else null;
 }
 
 pub fn isEmpty(self: *const Self) bool {
@@ -129,6 +110,10 @@ pub fn isEmpty(self: *const Self) bool {
 
 pub fn deinit(self: *Self) void {
     self.keys.deinit(self.allocator);
+    var it = self.hash_map.valueIterator();
+    while (it.next()) |k| {
+        k.deinit();
+    }
     self.hash_map.deinit();
     self.* = undefined;
 }
@@ -141,14 +126,20 @@ test "consistency" {
     var ch2: Self = .init(allocator, 3, null);
     defer ch2.deinit();
 
-    _ = try ch1.add("key1");
-    _ = try ch1.add("key2");
+    _ = try ch1.add(Key.static("key1"));
+    _ = try ch1.add(Key.static("key2"));
 
-    _ = try ch2.add("key1");
-    _ = try ch2.add("key2");
+    _ = try ch2.add(Key.static("key1"));
+    _ = try ch2.add(Key.static("key2"));
 
-    try expectEqual(ch1.get("key11"), ch2.get("key11"));
-    try expectEqual(ch1.get("key22"), ch2.get("key22"));
+    try expectEqual(
+        ch1.get(Key.static("key11")),
+        ch2.get(Key.static("key11")),
+    );
+    try expectEqual(
+        ch1.get(Key.static("key22")),
+        ch2.get(Key.static("key22")),
+    );
 }
 
 test "hashing" {
@@ -160,45 +151,15 @@ test "hashing" {
     }.hash);
     defer ch1.deinit();
 
-    _ = try ch1.add("2");
-    _ = try ch1.add("4");
-    _ = try ch1.add("6");
+    _ = try ch1.add(Key.static("2"));
+    _ = try ch1.add(Key.static("4"));
+    _ = try ch1.add(Key.static("6"));
 
-    const exists = try ch1.add("6");
+    const exists = try ch1.add(Key.static("6"));
     try expectEqual(true, exists);
 
-    try expectEqual(ch1.get("2"), "2");
-    try expectEqual(ch1.get("11"), "2");
-    try expectEqual(ch1.get("27"), "2");
-
-    try expectEqual(ch1.get("23"), "4");
-}
-
-test keyIterator {
-    const allocator = std.testing.allocator;
-    var ch: Self = .init(allocator, 3, null);
-    defer ch.deinit();
-
-    var keys = std.HashMap(
-        Key,
-        bool,
-        std.hash_map.StringContext,
-        80,
-    ).init(allocator);
-    defer keys.deinit();
-
-    try keys.put("k1", true);
-    try keys.put("k2", true);
-    try keys.put("k3", true);
-
-    _ = try ch.add("k1");
-    _ = try ch.add("k2");
-    _ = try ch.add("k3");
-
-    var it = ch.keyIterator();
-    while (it.next()) |k| {
-        _ = keys.remove(k);
-    }
-
-    try expectEqual(0, keys.count());
+    try expectEqual(ch1.get(Key.static("2")).?.val(), "2");
+    try expectEqual(ch1.get(Key.static("11")).?.val(), "2");
+    try expectEqual(ch1.get(Key.static("27")).?.val(), "2");
+    try expectEqual(ch1.get(Key.static("23")).?.val(), "4");
 }
