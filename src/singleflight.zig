@@ -8,29 +8,29 @@ const Slice = @import("slice.zig").Slice;
 
 pub const Key = Slice(u8);
 
-pub fn Group(comptime ResultType: type) type {
+pub fn Group(comptime Result: type) type {
     return struct {
         const Self = @This();
 
         mutex: Thread.Mutex = .{},
         allocator: Allocator,
-        inflight: std.StringHashMap(*Caller),
+        inflight: std.StringHashMap(*Inflight),
 
-        const Caller = struct {
+        const Inflight = struct {
             cond: Thread.Condition = .{},
-            value: ?ResultType = null,
-            waits: usize = 0,
+            result: ?Result = null,
+            waits: usize = 1,
             allocator: Allocator,
 
-            fn enter(self: *Caller) void {
+            fn wait(self: *Inflight, mutex: *Thread.Mutex) void {
                 self.waits += 1;
+                while (self.result == null) {
+                    self.cond.wait(mutex);
+                }
             }
 
-            fn leave(self: *Caller) void {
+            fn deinit(self: *Inflight) void {
                 self.waits -= 1;
-            }
-
-            fn destroy(self: *Caller) void {
                 if (self.waits == 0) {
                     self.allocator.destroy(self);
                 }
@@ -52,46 +52,39 @@ pub fn Group(comptime ResultType: type) type {
             self: *Self,
             key: Key,
             ctx: anytype,
-            task: *const fn (@TypeOf(ctx), Key) ResultType,
-        ) ResultType {
+            task: *const fn (@TypeOf(ctx), Key) Result,
+        ) Result {
             const rawkey = key.slice();
             self.mutex.lock();
-            const calling = self.inflight.get(rawkey);
-            if (calling) |caller| {
+            if (self.inflight.get(rawkey)) |inflight| {
                 defer self.mutex.unlock();
-                caller.enter();
-                while (caller.value == null) {
-                    caller.cond.wait(&self.mutex);
-                }
-                caller.leave();
-                const value = caller.value;
-                caller.destroy();
-                return value.?;
+                inflight.wait(&self.mutex);
+                defer inflight.deinit();
+                return inflight.result.?;
             }
 
-            const caller = self.allocator.create(Caller) catch |err| {
+            const inflight = self.allocator.create(Inflight) catch |err| {
                 @branchHint(.unlikely);
                 self.mutex.unlock();
                 return err;
             };
-            caller.* = .{ .allocator = self.allocator };
-            self.inflight.put(rawkey, caller) catch |err| {
+            inflight.* = .{ .allocator = self.allocator };
+            self.inflight.put(rawkey, inflight) catch |err| {
                 @branchHint(.unlikely);
                 defer self.mutex.unlock();
-                caller.destroy();
+                inflight.deinit();
                 return err;
             };
             self.mutex.unlock();
 
-            caller.value = task(ctx, key);
-            caller.cond.broadcast();
+            inflight.result = task(ctx, key);
+            inflight.cond.broadcast();
 
             self.mutex.lock();
             defer self.mutex.unlock();
             _ = self.inflight.remove(rawkey);
-            const value = caller.value;
-            caller.destroy();
-            return value.?;
+            defer inflight.deinit();
+            return inflight.result.?;
         }
 
         pub fn deinit(self: *Self) void {
