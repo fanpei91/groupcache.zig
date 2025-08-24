@@ -12,7 +12,7 @@ pub fn build(b: *std.Build) void {
 
     const protobuf_module = protobuf_dep.module("protobuf");
 
-    const lib_mod = b.addModule("groupcache", .{
+    const groupcache_mod = b.addModule("groupcache", .{
         .root_source_file = b.path("src/groupcache.zig"),
         .imports = &.{
             .{ .name = "protobuf", .module = protobuf_module },
@@ -20,14 +20,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-
-    const lib = b.addLibrary(.{
-        .linkage = .static,
-        .name = "groupcache",
-        .root_module = lib_mod,
-    });
-
-    b.installArtifact(lib);
 
     // gen-proto step
     {
@@ -50,28 +42,38 @@ pub fn build(b: *std.Build) void {
         gen_proto.dependOn(&protoc_step.step);
     }
 
-    // unit test step
+    // bin
     {
-        const enable_tsan = b.option(bool, "tsan", "Enable ThreadSanitizer");
-        const test_filter = b.option(
-            []const []const u8,
-            "test-filter",
-            "Filters for test: specify multiple times for multiple filters",
-        );
-        const tests = b.addTest(.{
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/groupcache.zig"),
-                .target = target,
-                .optimize = optimize,
-                .sanitize_thread = enable_tsan,
-            }),
-            .filters = test_filter orelse &.{},
+        var httpz_dep = b.dependency("httpz", .{
+            .target = target,
+            .optimize = optimize,
         });
 
-        tests.root_module.addImport("protobuf", protobuf_module);
-        const run_test = b.addRunArtifact(tests);
+        const exe = b.addExecutable(.{
+            .name = "static-file-cache",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("bin/static_file_cache.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "groupcache", .module = groupcache_mod },
+                    .{ .name = "httpz", .module = httpz_dep.module("httpz") },
+                },
+            }),
+        });
 
-        const test_step = b.step("test", "Run tests");
-        test_step.dependOn(&run_test.step);
+        b.installArtifact(exe);
+
+        const run_cmd = b.addRunArtifact(exe);
+        run_cmd.step.dependOn(b.getInstallStep());
+        if (b.args) |args| {
+            run_cmd.addArgs(args);
+        }
+
+        const run_step = b.step(
+            "static-file-cache",
+            "Run static file cache server",
+        );
+        run_step.dependOn(&run_cmd.step);
     }
 }

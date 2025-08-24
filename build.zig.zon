@@ -8,6 +8,10 @@
             .url = "git+https://github.com/mochalins/zig-protobuf?ref=0.15.1_port#55e5759dd60d5d6c4ddc756daa429d66fa464e39",
             .hash = "protobuf-2.0.0-0e82av_tJAB8lLGgPXMI3bE1SOg3vP5GDCSlcjDurOyM",
         },
+        .httpz = .{
+            .url = "git+https://github.com/karlseguin/http.zig?ref=master#90e7fc07ef7157a4da6922571fb4daef38b48998",
+            .hash = "httpz-0.0.0-PNVzrHLABgDoVnzqKpEbx2rZIzmMclEdoEmdJDfZmxsv",
+        },
     },
     .paths = .{
         "build.zig",

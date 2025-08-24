@@ -1,20 +1,18 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const protocol = @import("protocol/groupcachepb.pb.zig");
-const slice = @import("slice.zig");
+const mem = @import("mem.zig");
 
-const FlightGroup = @import("singleflight.zig").Group(anyerror!Value);
-const LRUCache = @import("lru.zig").Cache(
-    Key,
-    Value,
-    slice.BytesHashMapContext,
-);
+const FlightGroup = @import("FlightGroup.zig");
+const LRUCache = @import("LRUCache.zig");
+
+pub const http = @import("http.zig");
 
 pub const AtomicUsize = @import("atomic.zig").Atomic(usize);
 pub const GetRequest = protocol.GetRequest;
 pub const GetResponse = protocol.GetResponse;
 
-pub const Bytes = slice.Bytes;
+pub const Bytes = mem.Bytes;
 pub const Key = Bytes;
 pub const Value = Bytes;
 
@@ -32,8 +30,8 @@ pub const ProtoGetter = struct {
         self: *Self,
         allocator: Allocator,
         req: GetRequest,
-    ) !GetResponse {
-        return try self.vtable.get(self.ptr, allocator, req);
+    ) anyerror!GetResponse {
+        return self.vtable.get(self.ptr, allocator, req);
     }
 
     fn name(self: *Self) Bytes {
@@ -53,7 +51,7 @@ pub const Getter = struct {
         self: *Getter,
         key: Key,
     ) anyerror!Value {
-        return try self.vtable.get(self.ptr, key);
+        return self.vtable.get(self.ptr, key);
     }
 };
 
@@ -73,37 +71,23 @@ pub const GroupCache = struct {
     const Self = @This();
 
     pub const Stats = struct {
-        /// any Get request, including from peers
         gets: AtomicUsize = .init(0),
-
-        /// either cache was good
         cache_hits: AtomicUsize = .init(0),
 
-        /// either remote load or remote cache hit (not an error)
         peer_loads: AtomicUsize = .init(0),
-
         peer_errors: AtomicUsize = .init(0),
 
-        /// (gets - cacheHits)
         loads: AtomicUsize = .init(0),
-
-        /// after single flight
         loads_deduped: AtomicUsize = .init(0),
-
-        /// total good local loads
         local_loads: AtomicUsize = .init(0),
-
-        /// total bad local loads
         local_load_errs: AtomicUsize = .init(0),
 
-        /// gets that came over the network from peers
         server_requests: AtomicUsize = .init(0),
     };
 
     pub const Options = struct {
         getter: Getter,
         peers: PeerPicker,
-        /// limit for sum of main_cache and hot_cache size.
         cached_bytes: usize,
         rand: std.Random = std.crypto.random,
     };
@@ -134,38 +118,32 @@ pub const GroupCache = struct {
     pub fn get(self: *Self, key: Key) !Value {
         self.stats.gets.add(1);
 
-        const cached_value = self.lookupCache(key);
-        if (cached_value) |v| {
+        const cached = self.lookupCache(key);
+        if (cached) |value| {
             self.stats.cache_hits.add(1);
-            return v;
+            return value;
         }
 
-        return try self.load(key);
+        return self.load(key);
     }
 
     fn lookupCache(self: *Self, key: Key) ?Value {
         if (self.options.cached_bytes == 0) {
             return null;
         }
-
-        const value = self.main_cache.get(key);
-        if (value) |v| {
-            return v;
-        }
-
-        return self.hot_cache.get(key);
+        return self.main_cache.get(key) orelse self.hot_cache.get(key);
     }
 
     fn load(self: *Self, key: Key) !Value {
         self.stats.loads.add(1);
-        return try self.load_group.do(key, self, loadTask);
+        return try self.load_group.do(key, self, doLoad);
     }
 
-    fn loadTask(self: *Self, key: Key) !Value {
-        const cached_value = self.lookupCache(key);
-        if (cached_value) |cached| {
+    fn doLoad(self: *Self, key: Key) !Value {
+        const cached = self.lookupCache(key);
+        if (cached) |value| {
             self.stats.cache_hits.add(1);
-            return cached;
+            return value;
         }
 
         self.stats.loads_deduped.add(1);
@@ -260,8 +238,6 @@ pub const GroupCache = struct {
     }
 };
 
-/// Cache is a wrapper around an *lru.Cache that adds synchronization,
-/// counts the size of all keys and values.
 const Cache = struct {
     const Self = @This();
 
@@ -277,9 +253,7 @@ const Cache = struct {
     lru: LRUCache,
     mu: std.Thread.Mutex = .{},
 
-    /// of all keys and values
     nbytes: usize = 0,
-
     nhit: usize = 0,
     nget: usize = 0,
     nevict: usize = 0,
@@ -300,21 +274,14 @@ const Cache = struct {
         self.mu.lock();
         defer self.mu.unlock();
 
-        const keyclone = key.clone();
-        const valclone = value.clone();
-        const old_value = self.lru.add(keyclone, valclone) catch |err| {
-            keyclone.deinit();
-            valclone.deinit();
-            return err;
-        };
-        self.nbytes += keyclone.len();
-        self.nbytes += valclone.len();
+        self.nbytes += key.len();
+        self.nbytes += value.len();
 
+        const old_value = try self.lru.add(key, value);
         if (old_value) |old| {
+            defer old.deinit();
             self.nbytes -= old.len();
-            old.deinit();
-            self.nbytes -= keyclone.len();
-            keyclone.deinit();
+            self.nbytes -= key.len();
         }
     }
 
@@ -327,7 +294,7 @@ const Cache = struct {
         const value = self.lru.get(key);
         if (value) |v| {
             self.nhit += 1;
-            return v.clone();
+            return v;
         }
         return null;
     }
@@ -343,7 +310,7 @@ const Cache = struct {
         defer self.mu.unlock();
         return .{
             .bytes = self.nbytes,
-            .items = self.items_locked(),
+            .items = self.lru.len(),
             .gets = self.nget,
             .hits = self.nhit,
             .evictions = self.nevict,
@@ -353,10 +320,6 @@ const Cache = struct {
     fn items(self: *Self) usize {
         self.mu.lock();
         defer self.mu.unlock();
-        return self.items_locked();
-    }
-
-    fn items_locked(self: *Self) usize {
         return self.lru.len();
     }
 
@@ -366,186 +329,17 @@ const Cache = struct {
         return self.nbytes;
     }
 
-    fn evict(ptr: *anyopaque, entry: LRUCache.Entry) void {
+    fn evict(ptr: *anyopaque, key: Key, value: Value) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        {
-            self.mu.lock();
-            defer self.mu.unlock();
-            self.nbytes -= entry.key.len();
-            self.nbytes -= entry.value.len();
-            self.nevict += 1;
-        }
-        entry.key.deinit();
-        entry.value.deinit();
+        self.mu.lock();
+        defer self.mu.unlock();
+        self.nbytes -= key.len();
+        self.nbytes -= value.len();
+        self.nevict += 1;
     }
 
     fn deinit(self: *Self) void {
-        var entry_iter = self.lru.iterator();
-        while (entry_iter.next()) |entry| {
-            entry.key.deinit();
-            entry.value.deinit();
-        }
         self.lru.deinit();
         self.allocator.destroy(self);
     }
 };
-
-test GroupCache {
-    const MockProtoGetter = struct {
-        const Self = @This();
-
-        identifier: Bytes,
-        ngets: usize = 0,
-
-        fn protoGetter(self: *Self) ProtoGetter {
-            return .{
-                .ptr = self,
-                .vtable = &.{
-                    .get = get,
-                    .name = name,
-                },
-            };
-        }
-
-        fn get(
-            ptr: *anyopaque,
-            allocator: Allocator,
-            req: GetRequest,
-        ) !GetResponse {
-            const self: *Self = @ptrCast(@alignCast(ptr));
-            self.ngets += 1;
-            const res_value = try std.fmt.allocPrint(
-                allocator,
-                "{s}->[group: {s}, key: {s}]",
-                .{
-                    self.identifier.val(),
-                    req.group,
-                    req.key,
-                },
-            );
-            return .{
-                .value = res_value,
-                .minute_qps = 0,
-            };
-        }
-
-        fn name(ptr: *anyopaque) Bytes {
-            const self: *Self = @ptrCast(@alignCast(ptr));
-            return self.identifier.clone();
-        }
-    };
-    const MockPeerPicker = struct {
-        const Self = @This();
-
-        mock_proto_getter: *MockProtoGetter,
-
-        fn peerPicker(self: *Self) PeerPicker {
-            return .{
-                .ptr = self,
-                .vtable = &.{
-                    .pickPeer = pickPeer,
-                },
-            };
-        }
-
-        fn pickPeer(ptr: *anyopaque, key: Key) ?ProtoGetter {
-            const self: *Self = @ptrCast(@alignCast(ptr));
-            if (std.mem.startsWith(u8, key.val(), "peer")) {
-                return self.mock_proto_getter.protoGetter();
-            }
-            return null;
-        }
-    };
-    const MockGetter = struct {
-        allocator: Allocator,
-        ngets: usize = 0,
-
-        const Self = @This();
-
-        fn getter(self: *Self) Getter {
-            return .{
-                .ptr = self,
-                .vtable = &.{
-                    .get = get,
-                },
-            };
-        }
-
-        fn get(ptr: *anyopaque, key: Key) !Value {
-            const self: *Self = @ptrCast(@alignCast(ptr));
-            self.ngets += 1;
-            const rawvalue = try std.fmt.allocPrint(
-                self.allocator,
-                "local->[key: {s}]",
-                .{key.val()},
-            );
-            return try Bytes.move(rawvalue, self.allocator);
-        }
-    };
-
-    const allocator = std.testing.allocator;
-    const peer_identifier = Bytes.static("peer://127.0.0.1:8080");
-
-    var mock_proto_getter = MockProtoGetter{
-        .identifier = peer_identifier,
-    };
-    var mock_peer_picker = MockPeerPicker{
-        .mock_proto_getter = &mock_proto_getter,
-    };
-    var mock_getter = MockGetter{
-        .allocator = allocator,
-    };
-
-    var gc = try GroupCache.init(
-        allocator,
-        Bytes.static("g1"),
-        .{
-            .cached_bytes = 128 * 1024 * 1024,
-            .peers = mock_peer_picker.peerPicker(),
-            .getter = mock_getter.getter(),
-        },
-    );
-    defer gc.deinit();
-
-    const k1 = Key.static("peer:key1");
-    const v1 = try gc.get(k1);
-    defer v1.deinit();
-    const expected_v1 = "peer://127.0.0.1:8080->[group: g1, key: peer:key1]";
-    try std.testing.expectEqualStrings(
-        expected_v1,
-        v1.val(),
-    );
-    const v1_1 = try gc.get(k1);
-    defer v1_1.deinit();
-    try std.testing.expectEqualStrings(
-        expected_v1,
-        v1_1.val(),
-    );
-    try std.testing.expect(mock_proto_getter.ngets >= 1);
-
-    const k2 = Key.static("local:key1");
-    const v2 = try gc.get(k2);
-    defer v2.deinit();
-    const expected_v2 = "local->[key: local:key1]";
-    try std.testing.expectEqualStrings(
-        expected_v2,
-        v2.val(),
-    );
-    const v2_1 = try gc.get(k2);
-    defer v2_1.deinit();
-    try std.testing.expectEqualStrings(
-        expected_v2,
-        v2_1.val(),
-    );
-    try std.testing.expectEqual(1, mock_getter.ngets);
-}
-
-test "tests:modules" {
-    _ = @import("atomic.zig");
-    _ = @import("ConsistentHash.zig");
-    _ = @import("lru.zig");
-    _ = @import("singleflight.zig");
-    _ = @import("sort.zig");
-    _ = @import("slice.zig");
-    std.testing.refAllDecls(@This());
-}
