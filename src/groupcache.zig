@@ -1,26 +1,20 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const protocol = @import("protocol/groupcachepb.pb.zig");
+const slice = @import("slice.zig");
 
 const FlightGroup = @import("singleflight.zig").Group(anyerror!Value);
 const LRUCache = @import("lru.zig").Cache(
     Key,
     Value,
-    KeyContext,
+    slice.BytesHashMapContext,
 );
-const KeyContext = struct {
-    pub fn hash(_: @This(), s: Key) u64 {
-        return std.hash_map.hashString(s.val());
-    }
-    pub fn eql(_: @This(), a: Key, b: Key) bool {
-        return std.hash_map.eqlString(a.val(), b.val());
-    }
-};
+
 pub const AtomicUsize = @import("atomic.zig").Atomic(usize);
 pub const GetRequest = protocol.GetRequest;
 pub const GetResponse = protocol.GetResponse;
 
-pub const Bytes = @import("slice.zig").Bytes;
+pub const Bytes = slice.Bytes;
 pub const Key = Bytes;
 pub const Value = Bytes;
 
@@ -553,6 +547,5 @@ test "tests:modules" {
     _ = @import("singleflight.zig");
     _ = @import("sort.zig");
     _ = @import("slice.zig");
-    _ = @import("http.zig");
     std.testing.refAllDecls(@This());
 }

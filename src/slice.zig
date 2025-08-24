@@ -3,6 +3,15 @@ const Allocator = std.mem.Allocator;
 
 pub const Bytes = Slice(u8);
 
+pub const BytesHashMapContext = struct {
+    pub fn hash(_: @This(), s: Bytes) u64 {
+        return std.hash.Wyhash.hash(0, s.val());
+    }
+    pub fn eql(_: @This(), a: Bytes, b: Bytes) bool {
+        return std.mem.eql(u8, a.val(), b.val());
+    }
+};
+
 /// A reference-counted slice type that can hold either owned or borrowed data.
 /// Provides memory-safe sharing through reference counting for owned slices,
 /// while allowing zero-cost usage of compile-time constants and borrowed data.
