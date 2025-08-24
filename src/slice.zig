@@ -21,8 +21,12 @@ pub fn Slice(comptime T: type) type {
 
         /// Take ownership of the heap-allocated slice `s`
         /// (allocated with `allocator`).
+        /// Automatically free `s` if internal allocation fails.
         pub fn move(s: []T, allocator: Allocator) Allocator.Error!Self {
-            const rc = try allocator.create(Rc);
+            const rc = allocator.create(Rc) catch |err| {
+                allocator.free(s);
+                return err;
+            };
             rc.* = .{
                 .slice = s,
                 .allocator = allocator,

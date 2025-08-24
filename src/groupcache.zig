@@ -206,15 +206,12 @@ pub const GroupCache = struct {
             .group = self.name.val(),
             .key = key.val(),
         };
-        var res = try peer.get(self.allocator, req);
+        const res = try peer.get(self.allocator, req);
         const value = res.value orelse return error.MissingPeerResponseValue;
-        const val_slice = Bytes.move(
+        const val_slice = try Bytes.move(
             @constCast(value),
             self.allocator,
-        ) catch |err| {
-            res.deinit(self.allocator);
-            return err;
-        };
+        );
 
         const pop = self.options.rand.intRangeAtMost(u8, 0, 9) == 0;
         if (pop) {
