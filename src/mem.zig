@@ -94,33 +94,33 @@ pub fn Slice(comptime T: type) type {
             return .{ .Const = s };
         }
 
-        pub fn clone(self: Self) Self {
-            switch (self) {
+        pub fn clone(self: *const Self) Self {
+            switch (self.*) {
                 .Owned => |box| {
                     box.refs.incr();
                     return .{ .Owned = box };
                 },
-                .Const => return self,
+                .Const => return self.*,
             }
         }
 
-        pub fn val(self: Self) []T {
-            switch (self) {
+        pub fn val(self: *const Self) []T {
+            switch (self.*) {
                 .Owned => |box| return box.slice,
                 .Const => |c| return @constCast(c),
             }
         }
 
-        pub fn eql(self: Self, other: Self) bool {
+        pub fn eql(self: *const Self, other: *const Self) bool {
             return std.mem.eql(T, self.val(), other.val());
         }
 
-        pub fn len(self: Self) usize {
+        pub fn len(self: *const Self) usize {
             return self.val().len;
         }
 
-        pub fn deinit(self: Self) void {
-            switch (self) {
+        pub fn deinit(self: *const Self) void {
+            switch (self.*) {
                 .Owned => |box| {
                     box.refs.decr();
                     if (box.refs.get() == 0) {

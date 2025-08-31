@@ -6,7 +6,7 @@ const mem = @import("mem.zig");
 const FlightGroup = @import("FlightGroup.zig");
 const LRUCache = @import("LRUCache.zig");
 
-pub const http = @import("http.zig");
+pub const cluster = @import("cluster.zig");
 
 pub const AtomicUsize = @import("atomic.zig").Atomic(usize);
 pub const GetRequest = protocol.GetRequest;

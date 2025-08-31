@@ -15,7 +15,7 @@ const GroupCache = groupcache.GroupCache;
 
 pub const Peer = Bytes;
 
-pub const HTTPPool = struct {
+pub const HTTPCluster = struct {
     const Self = @This();
 
     const default_replicas = 50;
@@ -137,14 +137,14 @@ pub const HTTPPool = struct {
 
         const peer = self.peers.get(key) orelse return null;
         defer peer.deinit();
-        if (peer.eql(self.self)) {
+        if (peer.eql(&self.self)) {
             return null;
         }
         var getter = self.http_getters.getPtr(peer) orelse return null;
         return getter.protoGetter();
     }
 
-    pub fn serve(
+    pub fn get(
         self: *Self,
         group: []const u8,
         key: Key,

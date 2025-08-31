@@ -1,8 +1,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const groupcache = @import("groupcache");
-const Peer = groupcache.http.Peer;
-const HTTPPool = groupcache.http.HTTPPool;
+const Peer = groupcache.cluster.Peer;
+const HTTPCluster = groupcache.cluster.HTTPCluster;
 const GroupCache = groupcache.GroupCache;
 const Getter = groupcache.Getter;
 const Key = groupcache.Key;
@@ -67,7 +67,7 @@ pub fn main() !void {
 const RouterHandler = struct {
     allocator: Allocator,
     client: *std.http.Client,
-    pool: *HTTPPool,
+    cluster: *HTTPCluster,
     getter: *FakeStaticFileGetter,
     gcache: *GroupCache,
 
@@ -79,13 +79,13 @@ const RouterHandler = struct {
         client.* = .{ .allocator = allocator };
         errdefer client.deinit();
 
-        const pool = try allocator.create(HTTPPool);
-        errdefer allocator.destroy(pool);
-        pool.* = try .init(allocator, client, .{
+        const cluster = try allocator.create(HTTPCluster);
+        errdefer allocator.destroy(cluster);
+        cluster.* = try .init(allocator, client, .{
             .self = self,
         });
-        errdefer pool.deinit();
-        try pool.setPeers(peers);
+        errdefer cluster.deinit();
+        try cluster.setPeers(peers);
 
         const getter = try allocator.create(FakeStaticFileGetter);
         errdefer allocator.destroy(getter);
@@ -98,18 +98,18 @@ const RouterHandler = struct {
             Bytes.static("files"),
             .{
                 .cached_bytes = 512 * 1024 * 1024,
-                .peers = pool.peerPicker(),
+                .peers = cluster.peerPicker(),
                 .getter = getter.getter(),
             },
         );
         errdefer gcache.deinit();
 
-        try pool.addGroup(gcache);
+        try cluster.addGroup(gcache);
 
         return .{
             .allocator = allocator,
             .client = client,
-            .pool = pool,
+            .cluster = cluster,
             .getter = getter,
             .gcache = gcache,
         };
@@ -120,13 +120,13 @@ const RouterHandler = struct {
         const key = try Key.copy(req.param("key").?, self.allocator);
         defer key.deinit();
 
-        var value = try self.pool.serve(group, key);
+        var value = try self.cluster.get(group, key);
         defer value.deinit();
 
         const peer_value = try std.mem.concat(
             res.arena,
             u8,
-            &.{ "from peer: ", self.pool.self.val(), "\n", value.val() },
+            &.{ "from peer: ", self.cluster.self.val(), "\n", value.val() },
         );
         var protobuf_res = GetResponse{ .value = peer_value };
         res.header("Content-Type", "application/x-protobuf");
@@ -139,7 +139,7 @@ const RouterHandler = struct {
         const key = try Key.copy(req.param("key").?, self.allocator);
         defer key.deinit();
 
-        var value = try self.pool.serve(group, key);
+        var value = try self.cluster.get(group, key);
         defer value.deinit();
 
         const body = try res.arena.dupeZ(u8, value.val());
@@ -147,8 +147,8 @@ const RouterHandler = struct {
     }
 
     fn deinit(self: *Self) void {
-        self.pool.deinit();
-        self.allocator.destroy(self.pool);
+        self.cluster.deinit();
+        self.allocator.destroy(self.cluster);
 
         self.gcache.deinit();
         self.allocator.destroy(self.gcache);
