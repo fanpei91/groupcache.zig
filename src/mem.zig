@@ -2,6 +2,43 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Atomic = @import("atomic.zig").Atomic;
 
+pub fn Ref(comptime atomic: bool) type {
+    return struct {
+        const Self = @This();
+
+        refs: if (atomic) Atomic(usize) else usize,
+
+        pub fn init(ref: usize) Self {
+            return .{
+                .refs = if (atomic) Atomic(usize).init(ref) else ref,
+            };
+        }
+
+        pub fn incr(self: *Self) void {
+            if (atomic) {
+                self.refs.add(1);
+            } else {
+                self.refs += 1;
+            }
+        }
+
+        pub fn decr(self: *Self) void {
+            if (atomic) {
+                self.refs.sub(1);
+            } else {
+                self.refs -= 1;
+            }
+        }
+
+        pub fn get(self: *Self) usize {
+            if (atomic) {
+                return self.refs.get();
+            }
+            return self.refs;
+        }
+    };
+}
+
 pub const Bytes = Slice(u8);
 
 pub const BytesHashContext = struct {
@@ -18,7 +55,7 @@ pub fn Slice(comptime T: type) type {
         const Box = struct {
             allocator: Allocator,
             slice: []T,
-            refs: Atomic(usize),
+            refs: Ref(true),
         };
 
         const Self = @This();
@@ -60,7 +97,7 @@ pub fn Slice(comptime T: type) type {
         pub fn clone(self: Self) Self {
             switch (self) {
                 .Owned => |box| {
-                    box.refs.add(1);
+                    box.refs.incr();
                     return .{ .Owned = box };
                 },
                 .Const => return self,
@@ -85,7 +122,7 @@ pub fn Slice(comptime T: type) type {
         pub fn deinit(self: Self) void {
             switch (self) {
                 .Owned => |box| {
-                    box.refs.sub(1);
+                    box.refs.decr();
                     if (box.refs.get() == 0) {
                         box.allocator.free(box.slice);
                         box.allocator.destroy(box);
