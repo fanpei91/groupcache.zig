@@ -25,7 +25,7 @@ pub fn Ref(comptime atomic: bool) type {
 
         pub fn decr(self: *Self) usize {
             if (atomic) {
-                return self.refs.fetchSub(1, .monotonic);
+                return self.refs.fetchSub(1, .release);
             } else {
                 const prev = self.refs;
                 self.refs -= 1;
