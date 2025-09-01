@@ -8,7 +8,6 @@ const LRUCache = @import("LRUCache.zig");
 
 pub const cluster = @import("cluster.zig");
 
-pub const AtomicUsize = @import("atomic.zig").Atomic(usize);
 pub const GetRequest = protocol.GetRequest;
 pub const GetResponse = protocol.GetResponse;
 
@@ -70,6 +69,8 @@ pub const PeerPicker = struct {
 pub const GroupCache = struct {
     const Self = @This();
 
+    const AtomicUsize = std.atomic.Value(usize);
+
     pub const Stats = struct {
         gets: AtomicUsize = .init(0),
         cache_hits: AtomicUsize = .init(0),
@@ -116,11 +117,11 @@ pub const GroupCache = struct {
     }
 
     pub fn get(self: *Self, key: Key) !Value {
-        self.stats.gets.add(1);
+        _ = self.stats.gets.fetchAdd(1, .monotonic);
 
         const cached = self.lookupCache(key);
         if (cached) |value| {
-            self.stats.cache_hits.add(1);
+            _ = self.stats.cache_hits.fetchAdd(1, .monotonic);
             return value;
         }
 
@@ -135,23 +136,23 @@ pub const GroupCache = struct {
     }
 
     fn load(self: *Self, key: Key) !Value {
-        self.stats.loads.add(1);
+        _ = self.stats.loads.fetchAdd(1, .monotonic);
         return try self.load_group.do(key, self, doLoad);
     }
 
     fn doLoad(self: *Self, key: Key) !Value {
         const cached = self.lookupCache(key);
         if (cached) |value| {
-            self.stats.cache_hits.add(1);
+            _ = self.stats.cache_hits.fetchAdd(1, .monotonic);
             return value;
         }
 
-        self.stats.loads_deduped.add(1);
+        _ = self.stats.loads_deduped.fetchAdd(1, .monotonic);
 
         var peer = self.options.peers.pickPeer(key);
         if (peer) |*p| {
             if (self.getFromPeer(p, key)) |peer_value| {
-                self.stats.peer_loads.add(1);
+                _ = self.stats.peer_loads.fetchAdd(1, .monotonic);
                 return peer_value;
             } else |err| {
                 const name = p.name();
@@ -161,15 +162,15 @@ pub const GroupCache = struct {
                     key.val(),
                     err,
                 });
-                self.stats.peer_errors.add(1);
+                _ = self.stats.peer_errors.fetchAdd(1, .monotonic);
             }
         }
 
         const local_value = self.getFromLocal(key) catch |err| {
-            self.stats.local_load_errs.add(1);
+            _ = self.stats.local_load_errs.fetchAdd(1, .monotonic);
             return err;
         };
-        self.stats.local_loads.add(1);
+        _ = self.stats.local_loads.fetchAdd(1, .monotonic);
         return local_value;
     }
 

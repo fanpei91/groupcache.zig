@@ -152,7 +152,7 @@ pub const HTTPCluster = struct {
         var gcache = self.groups.get(group) orelse {
             return error.GroupNotFound;
         };
-        gcache.stats.server_requests.add(1);
+        _ = gcache.stats.server_requests.fetchAdd(1, .monotonic);
         return try gcache.get(key);
     }
 

@@ -1,40 +1,36 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const Atomic = @import("atomic.zig").Atomic;
 
 pub fn Ref(comptime atomic: bool) type {
     return struct {
         const Self = @This();
 
-        refs: if (atomic) Atomic(usize) else usize,
+        refs: if (atomic) std.atomic.Value(usize) else usize,
 
         pub fn init(ref: usize) Self {
             return .{
-                .refs = if (atomic) Atomic(usize).init(ref) else ref,
+                .refs = if (atomic) .init(ref) else ref,
             };
         }
 
-        pub fn incr(self: *Self) void {
+        pub fn incr(self: *Self) usize {
             if (atomic) {
-                self.refs.add(1);
+                return self.refs.fetchAdd(1, .monotonic);
             } else {
+                const prev = self.refs;
                 self.refs += 1;
+                return prev;
             }
         }
 
-        pub fn decr(self: *Self) void {
+        pub fn decr(self: *Self) usize {
             if (atomic) {
-                self.refs.sub(1);
+                return self.refs.fetchSub(1, .monotonic);
             } else {
+                const prev = self.refs;
                 self.refs -= 1;
+                return prev;
             }
-        }
-
-        pub fn get(self: *Self) usize {
-            if (atomic) {
-                return self.refs.get();
-            }
-            return self.refs;
         }
     };
 }
@@ -97,7 +93,7 @@ pub fn Slice(comptime T: type) type {
         pub fn clone(self: *const Self) Self {
             switch (self.*) {
                 .Owned => |box| {
-                    box.refs.incr();
+                    _ = box.refs.incr();
                     return .{ .Owned = box };
                 },
                 .Const => return self.*,
@@ -122,8 +118,8 @@ pub fn Slice(comptime T: type) type {
         pub fn deinit(self: *const Self) void {
             switch (self.*) {
                 .Owned => |box| {
-                    box.refs.decr();
-                    if (box.refs.get() == 0) {
+                    const prev = box.refs.decr();
+                    if (prev == 1) {
                         box.allocator.free(box.slice);
                         box.allocator.destroy(box);
                     }
